@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../l10n/app_localizations.dart';
 import '../models/device.dart';
+import '../services/captcha_fix.dart';
 import '../services/event_observer.dart';
 import '../services/link_builder.dart';
 import '../services/notifier.dart';
@@ -341,6 +342,10 @@ class _SessionViewState extends ConsumerState<SessionView> {
         ),
         UserScript(
           source: WebTheme.seedScript(dark),
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+        ),
+        UserScript(
+          source: CaptchaFix.script,
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
       ]);
