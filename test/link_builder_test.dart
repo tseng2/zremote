@@ -25,12 +25,24 @@ void main() {
       expect(LinkBuilder.parse(url), isNull);
     });
 
-    test('缺 hash 拒收', () {
-      const url = 'https://zcode.z.ai/remote/v4?sid=s&t=1';
+    test('v4 新版链接：只有 sid 也可导入（hash 自桌面端 v4 起不再下发）', () {
+      const url = 'https://zcode.z.ai/remote/v4'
+          '?sid=d_V4Sid0000000000000'
+          '&mid=00000000-0000-4000-8000-000000000000'
+          '&name=DESKTOP-ABC123&app_version=3.10.1';
+      final d = LinkBuilder.parse(url)!;
+      expect(d.sid, 'd_V4Sid0000000000000');
+      expect(d.params.containsKey('hash'), isFalse);
+      expect(d.label, 'DESKTOP-ABC123');
+      expect(d.baseUrl, 'https://zcode.z.ai/remote/v4');
+    });
+
+    test('缺 sid 拒收', () {
+      const url = 'https://zcode.z.ai/remote/v4?hash=x&t=1&mid=m&name=n';
       expect(LinkBuilder.parse(url), isNull);
     });
 
-    test('空参数值视同缺失', () {
+    test('sid 为空拒收', () {
       const url = 'https://zcode.z.ai/remote/v4?sid=&hash=x';
       expect(LinkBuilder.parse(url), isNull);
     });

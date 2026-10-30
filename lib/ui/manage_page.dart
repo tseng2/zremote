@@ -395,7 +395,7 @@ class _PasteDialogState extends State<_PasteDialog> {
               autofocus: true,
               style: zrMono(fontSize: 13, weight: FontWeight.w400),
               decoration: InputDecoration(
-                hintText: 'https://zcode.z.ai/remote/v4?sid=...&hash=...',
+                hintText: 'https://zcode.z.ai/remote/v4?sid=...',
                 counterText: '',
                 suffixIcon: value.text.isEmpty
                     ? null

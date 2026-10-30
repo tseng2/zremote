@@ -53,7 +53,7 @@
       }
     }
   },
-  "importFailed": "导入失败：链接需包含 sid 和 hash 参数",
+  "importFailed": "导入失败：链接需包含 sid 参数",
   "@importFailed": {
     "description": "Import error snackbar"
   },
@@ -213,7 +213,7 @@
   "@scannerPermOpenSettings": {
     "description": "Button to open app system settings"
   },
-  "invalidQr": "不是有效的远程控制二维码（缺少 sid/hash）",
+  "invalidQr": "不是有效的远程控制二维码（缺少 sid）",
   "@invalidQr": {
     "description": "Snackbar when scanned code is not a valid control QR"
   },

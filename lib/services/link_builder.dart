@@ -6,7 +6,6 @@ import '../models/device.dart';
 
 class LinkBuilder {
   static const _sidKey = 'sid';
-  static const _hashKey = 'hash';
   static const _tKey = 't';
   static const _nameKey = 'name';
 
@@ -25,8 +24,8 @@ class LinkBuilder {
     });
 
     final sid = params[_sidKey];
-    final hash = params[_hashKey];
-    if (sid == null || sid.isEmpty || hash == null || hash.isEmpty) return null;
+    // 桌面端 v4 起 relay 改为 sid 配对认证，二维码/链接不再携带 hash；旧版链接仍带 hash，此处仅要求 sid。
+    if (sid == null || sid.isEmpty) return null;
 
     final base = uri.hasPort
         ? Uri(
