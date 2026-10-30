@@ -21,5 +21,6 @@ jobs:
           for f in .github/release-notes/*.md; do
             tag=$(basename "$f" .md)
             echo "applying notes for $tag"
-            gh release edit "$tag" --notes-file "$f"
+            # 仓库里可能没有对应 tag 的 release（上游遗留的说明文件），跳过即可
+            gh release edit "$tag" --notes-file "$f" || echo "skip $tag: release not found"
           done
