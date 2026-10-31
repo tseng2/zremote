@@ -31,10 +31,9 @@ A mobile companion app for ZCode desktop remote control. The desktop shows a QR 
 
 ## Download & Install
 
-Get the latest build from the [Releases](https://github.com/pjpv/zremote/releases) page:
+Get the latest build from the [Releases](https://github.com/tseng2/zremote/releases) page:
 
 - **Android** — `app-release.apk`, install directly after downloading
-- **iOS** — `zremote-ios-unsigned.ipa`, an **unsigned build that cannot be installed directly**: sideload it with your own Apple ID via [AltStore](https://altstore.io), [Sideloadly](https://sideloadly.io), TrollStore, or similar (free-account signatures last 7 days and must be renewed)
 
 ## Building
 

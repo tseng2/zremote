@@ -64,13 +64,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final repoLink = find.textContaining('github.com/pjpv/zremote');
+    final repoLink = find.textContaining('github.com/tseng2/zremote');
     await tester.tap(repoLink);
     await tester.pump();
 
     expect(launches, hasLength(1));
     expect(launches.single.method, 'launch');
-    expect(launches.single.arguments['url'], 'https://github.com/pjpv/zremote');
+    expect(launches.single.arguments['url'], 'https://github.com/tseng2/zremote');
     expect(launches.single.arguments['useWebView'], isFalse);
 
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
