@@ -35,4 +35,46 @@ abstract final class WebSessionReset {
       debugPrint('[zr-webreset] step failed: $e');
     }
   }
+
+  /// 自愈脚本：relay 设备会话被重置（闲置回收 / 服务端重启）后，页面
+  /// 本地残留的旧「手机连接记录」会让恢复失败，停在「手机连接已失效」
+  /// 错误页；页面自身的「重新连接」只会带着同一份失效记录重复失败，
+  /// 也不会回退到用 URL 里的有效 sid 重新配对。注入后检测到该错误页
+  /// 即清空站点存储并带 zr_healed=1 重载一次：重载后走登录重新配对
+  /// （zr_healed 标记防止错误持续时无限自愈循环）。
+  static const String stalePairingHealScript = '''
+(function () {
+  if (/[?&]zr_healed=1/.test(location.search)) return;
+  var MARKERS = ['手机连接已失效', '当前页面的二维码参数无效'];
+  function hit() {
+    var text = document.body ? document.body.textContent : '';
+    if (!text) return false;
+    for (var i = 0; i < MARKERS.length; i++) {
+      if (text.indexOf(MARKERS[i]) !== -1) return true;
+    }
+    return false;
+  }
+  var healed = false;
+  function heal() {
+    if (healed) return;
+    healed = true;
+    try { window.localStorage.clear(); window.sessionStorage.clear(); } catch (e) {}
+    try {
+      var u = new URL(location.href);
+      u.searchParams.set('zr_healed', '1');
+      location.replace(u.toString());
+    } catch (e) { location.reload(); }
+  }
+  var mo = new MutationObserver(function () { if (hit()) heal(); });
+  function arm() {
+    if (hit()) { heal(); return; }
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', arm);
+  } else {
+    arm();
+  }
+})();
+''';
 }

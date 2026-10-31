@@ -19,6 +19,7 @@ import '../services/rpc_dispatch.dart';
 import '../services/resume_health.dart';
 import '../services/service_probe.dart';
 import '../services/session_jump.dart';
+import '../services/web_session_reset.dart';
 import '../services/web_theme.dart';
 import '../state/active_session.dart';
 import '../state/app_lifecycle.dart';
@@ -346,6 +347,10 @@ class _SessionViewState extends ConsumerState<SessionView> {
         ),
         UserScript(
           source: CaptchaFix.script,
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+        ),
+        UserScript(
+          source: WebSessionReset.stalePairingHealScript,
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
       ]);
