@@ -74,8 +74,8 @@ class _SessionViewState extends ConsumerState<SessionView> {
   bool _rendererGone = false;
   DateTime _lastWsActivity = DateTime.now();
   Timer? _resumeGrace;
-  final List<DateTime> _stalePairingHeals = [];
-  DateTime? _stalePairingClearedAt;
+  int _staleFailCount = 0;
+  Timer? _staleRetryTimer;
   DateTime? _loginHealAt;
   DateTime? _staleRestoreAt;
 
@@ -127,10 +127,12 @@ class _SessionViewState extends ConsumerState<SessionView> {
     if (oldDev.id == newDev.id &&
         (oldDev.baseUrl != newDev.baseUrl ||
             !mapEquals(oldDev.params, newDev.params))) {
-      // 链接已更换（重新扫码/更换连接配置）：解除自愈放弃标记。
+      // 链接已更换（重新扫码/更换连接配置）：复位全部自愈状态。
       WebSessionReset.clearRelinkRequired(widget.device.id);
-      _stalePairingHeals.clear();
-      _stalePairingClearedAt = null;
+      _staleFailCount = 0;
+      _staleRetryTimer?.cancel();
+      _loginHealAt = null;
+      _staleRestoreAt = null;
       _manualReload();
     }
   }
@@ -139,8 +141,8 @@ class _SessionViewState extends ConsumerState<SessionView> {
     if (status == SessionStatus.live) {
       // 配对成功：复位全部自愈状态（放弃标记、冷却、计数）。
       WebSessionReset.clearRelinkRequired(widget.device.id);
-      _stalePairingHeals.clear();
-      _stalePairingClearedAt = null;
+      _staleFailCount = 0;
+      _staleRetryTimer?.cancel();
       _loginHealAt = null;
       _staleRestoreAt = null;
     }
@@ -367,11 +369,11 @@ class _SessionViewState extends ConsumerState<SessionView> {
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
         UserScript(
-          source: WebSessionReset.stalePairingDetectScript,
+          source: WebSessionReset.deviceAuthIsolationScript(widget.device.id),
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
         UserScript(
-          source: WebSessionReset.authMirrorScript(widget.device.id),
+          source: WebSessionReset.stalePairingDetectScript,
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
       ]);
@@ -426,30 +428,12 @@ class _SessionViewState extends ConsumerState<SessionView> {
     return (remaining, pageAge);
   }
 
-  void _showPairingDiagSnack(
-    String source,
-    int jwtRemaining,
-    int pageAge, {
-    Duration duration = const Duration(seconds: 10),
-  }) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: duration,
-        content: Text(
-          'zr-diag[$source] jwt剩余${jwtRemaining < 0 ? "?" : "$jwtRemaining分"}'
-          ' 页面存活${pageAge < 0 ? "?" : "$pageAge分"}',
-        ),
-      ),
-    );
-  }
-
   /// 登录视图自愈：jwt 过期/缺失时 bootstrap 直接路由到这里。三种情况：
-  /// 1. jwt 仍有效（剩余 >10 分钟）：多半是 jwt-invalid-restart 标记把
-  ///    启动路由进了登录视图（标记在该次加载已被消费）——静默重载即恢复；
+  /// 1. jwt 仍有效（剩余 >10 分钟）：jwt-invalid-restart 标记把启动路由
+  ///    进了登录视图（标记在该次加载已被消费）——静默重载即恢复；
   /// 2. jwt 缺失：页面清除凭据的过度反应——从镜像回填后重载恢复；
-  /// 3. jwt 真临近过期（剩余 ≤10 分钟）：无可避免，常驻 SnackBar 供
-  ///    截图取证，由用户重新登录。
+  /// 3. jwt 真临近过期（剩余 ≤10 分钟）：静默走 OAuth 续期（Cookie 存活
+  ///    时零交互）。全部静默，诊断只进日志。
   Future<void> _onStalePairingLogin(String? diagJson) async {
     if (!mounted) return;
     final now = DateTime.now();
@@ -463,9 +447,8 @@ class _SessionViewState extends ConsumerState<SessionView> {
         now.difference(_loginHealAt!) < const Duration(minutes: 10)) {
       return;
     }
+    _loginHealAt = now;
     if (jwtRemaining > 10) {
-      _loginHealAt = now;
-      _showPairingDiagSnack('登录视图·jwt有效', jwtRemaining, pageAge);
       await _manualReload('login-view-valid-jwt');
       return;
     }
@@ -473,7 +456,6 @@ class _SessionViewState extends ConsumerState<SessionView> {
       final canRestore = _staleRestoreAt == null ||
           now.difference(_staleRestoreAt!) > const Duration(minutes: 15);
       if (canRestore) {
-        _loginHealAt = now;
         _staleRestoreAt = now;
         var restored = 0;
         try {
@@ -486,16 +468,10 @@ class _SessionViewState extends ConsumerState<SessionView> {
           '[zr-webreset] restore auth dev=${widget.device.id} '
           'restored=$restored',
         );
-        if (restored > 0) {
-          _showPairingDiagSnack('已回填登录态', jwtRemaining, pageAge);
-          if (mounted) await _manualReload('login-view-restored');
-          return;
-        }
+        if (mounted) await _manualReload('login-view-restored');
+        return;
       }
-      await _autoRelogin(jwtRemaining, pageAge);
-      return;
     }
-    // jwt 临近过期（剩余 ≤10 分钟）：立即静默续期，避免稍后中断使用。
     await _autoRelogin(jwtRemaining, pageAge);
   }
 
@@ -512,77 +488,51 @@ class _SessionViewState extends ConsumerState<SessionView> {
       clicked = r is num ? r.toInt() : int.tryParse('$r') ?? 0;
     } catch (_) {}
     debugPrint(
-      '[zr-webreset] auto relogin dev=${widget.device.id} clicked=$clicked',
+      '[zr-webreset] auto relogin dev=${widget.device.id} clicked=$clicked '
+      'jwtRemaining=$jwtRemaining pageAge=$pageAge',
     );
-    if (!mounted) return;
-    if (clicked > 0) {
-      _showPairingDiagSnack(
-        '自动续期中',
-        jwtRemaining,
-        pageAge,
-        duration: const Duration(seconds: 15),
-      );
-    } else {
-      _showPairingDiagSnack(
-        '登录视图·需重新登录',
-        jwtRemaining,
-        pageAge,
-        duration: const Duration(minutes: 30),
-      );
-    }
   }
 
-  /// 「手机连接已失效」自愈：sid 未变但设备会话被 relay 重置时，后台
-  /// 活着的页面用旧参数重连会被拒（ws WRONG_PARAM），页面停在错误页且
-  /// 自身重试无效。先用新鲜参数（新 t）静默重载——登录与站点存储原样
-  /// 保留，同一 sid 直接重新配对；10 分钟内两次仍失败视为页面登录态
-  /// （jwt）已过期，移除页面认证凭据后重载，让页面进入登录视图重新
-  /// 登录一次（不清 Cookie 与其余站点数据，见 WebSessionReset）。
+  /// 「手机连接已失效」自愈：sid 与电脑/桌面端版本绑定、不会随意变化，
+  /// 错误页只可能是暂时性状态（升级杀进程后的会话重置窗口、relay 抖动）
+  /// 或死 sid。处理：jwt 缺失先镜像回填；随后带退避静默重试（4/8/12/16/20
+  /// 秒共 5 次，约 1 分钟）——重置窗口为秒级，重试即可穿透；5 次仍失败
+  /// 才停手（错误页保留，等用户手动 ⟳ 或重新扫码），标记需重新连接以
+  /// 跳过后续自动重载。
   Future<void> _onStalePairingDetected(String? diagJson) async {
     if (!mounted) return;
     final now = DateTime.now();
     final (jwtRemaining, pageAge) = _parsePairingDiag(diagJson);
     debugPrint(
       '[zr-webreset] stale pairing dev=${widget.device.id} '
-      'jwtRemaining=$jwtRemaining pageAge=$pageAge '
-      'recent=${_stalePairingHeals.length}',
+      'jwtRemaining=$jwtRemaining pageAge=$pageAge fail=$_staleFailCount',
     );
-    _showPairingDiagSnack('错误页', jwtRemaining, pageAge);
-    if (WebSessionReset.isRelinkRequired(widget.device.id)) {
-      return; // 已放弃自愈的设备：不再自动重载/清凭据，等用户重新扫码
-    }
-    if (_stalePairingClearedAt != null &&
-        now.difference(_stalePairingClearedAt!) < const Duration(minutes: 5)) {
+    if (WebSessionReset.isRelinkRequired(widget.device.id)) return;
+    _staleFailCount++;
+    if (jwtRemaining < 0 &&
+        (_staleRestoreAt == null ||
+            now.difference(_staleRestoreAt!) > const Duration(minutes: 15))) {
+      // jwt 缺失（页面清除凭据的过度反应所致）：从镜像回填后重载。
+      _staleRestoreAt = now;
+      try {
+        await _controller?.evaluateJavascript(
+          source: 'window.__zrRestoreAuth ? window.__zrRestoreAuth() : 0',
+        );
+      } catch (_) {}
+      if (mounted) await _manualReload('stale-pairing-auth-restore');
       return;
     }
-    _stalePairingHeals.removeWhere(
-      (t) => now.difference(t) > const Duration(minutes: 10),
-    );
-    if (_stalePairingHeals.length >= 2) {
-      _stalePairingHeals.clear();
-      _stalePairingClearedAt = now;
-      final canRestore = jwtRemaining < 0 &&
-          (_staleRestoreAt == null ||
-           now.difference(_staleRestoreAt!) > const Duration(minutes: 15));
-      if (canRestore) {
-        // jwt 缺失（页面清除凭据的过度反应所致）：从镜像回填后重载。
-        _staleRestoreAt = now;
-        try {
-          await _controller?.evaluateJavascript(
-            source: 'window.__zrRestoreAuth ? window.__zrRestoreAuth() : 0',
-          );
-        } catch (_) {}
-        if (mounted) await _manualReload('stale-pairing-auth-restore');
-      } else {
-        // 持续报错且镜像/重载都无法恢复（死 sid 或账号不匹配）：
-        // 标记放弃自愈，等用户重新扫码或手动 ⟳。
-        WebSessionReset.markRelinkRequired(widget.device.id);
-        _showPairingDiagSnack('放弃自愈·请重新扫码', jwtRemaining, pageAge);
-      }
+    if (_staleFailCount <= 5) {
+      _staleRetryTimer?.cancel();
+      _staleRetryTimer = Timer(Duration(seconds: 4 * _staleFailCount), () {
+        if (mounted) _manualReload('stale-retry-$_staleFailCount');
+      });
       return;
     }
-    _stalePairingHeals.add(now);
-    await _manualReload('stale-pairing');
+    // 连续 5 次仍失败：停手（错误页保留），标记需重新连接以跳过
+    // 后续自动重载；用户手动 ⟳ 或重新扫码后恢复。
+    _staleRetryTimer?.cancel();
+    WebSessionReset.markRelinkRequired(widget.device.id);
   }
 
   Future<void> _onLoadError() async {
@@ -827,6 +777,7 @@ class _SessionViewState extends ConsumerState<SessionView> {
     _rpcBridge?.dispose();
     _dispatchServer?.dispose();
     _resumeGrace?.cancel();
+    _staleRetryTimer?.cancel();
     super.dispose();
   }
 
