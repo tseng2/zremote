@@ -31,10 +31,9 @@ ZCode 桌面端远程控制的手机伴侣 App。电脑端出示二维码，手�
 
 ## 下载与安装
 
-到 [Releases](https://github.com/pjpv/zremote/releases) 页获取最新版：
+到 [Releases](https://github.com/tseng2/zremote/releases) 页获取最新版：
 
 - **Android** —— `app-release.apk`，下载后直接安装
-- **iOS** —— `zremote-ios-unsigned.ipa`，**未签名包，无法直接安装**：请使用 [AltStore](https://altstore.io)、[Sideloadly](https://sideloadly.io) 或 TrollStore 等工具，用自己的 Apple ID 签名后侧载（免费账号签名有效期 7 天，到期需重新签名）
 
 ## 构建
 

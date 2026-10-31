@@ -537,7 +537,7 @@ class _VersionFooter extends StatelessWidget {
   const _VersionFooter();
 
   static final _info = PackageInfo.fromPlatform();
-  static const _repoUrl = 'https://github.com/pjpv/zremote';
+  static const _repoUrl = 'https://github.com/tseng2/zremote';
 
   Future<void> _openRepo() async {
     try {
@@ -607,7 +607,7 @@ class _VersionFooter extends StatelessWidget {
                         ),
                         const SizedBox(width: 5),
                         Text(
-                          '${AppLocalizations.of(context)!.repoPrefix}: github.com/pjpv/zremote',
+                          '${AppLocalizations.of(context)!.repoPrefix}: github.com/tseng2/zremote',
                           style: TextStyle(
                             fontSize: 11.5,
                             fontWeight: FontWeight.w600,
