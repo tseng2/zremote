@@ -472,40 +472,64 @@ class _SessionViewState extends ConsumerState<SessionView> {
     if (jwtRemaining < 0) {
       final canRestore = _staleRestoreAt == null ||
           now.difference(_staleRestoreAt!) > const Duration(minutes: 15);
-      if (!canRestore) {
-        _showPairingDiagSnack(
-          '登录视图·需重新登录',
-          jwtRemaining,
-          pageAge,
-          duration: const Duration(minutes: 30),
+      if (canRestore) {
+        _loginHealAt = now;
+        _staleRestoreAt = now;
+        var restored = 0;
+        try {
+          final r = await _controller?.evaluateJavascript(
+            source: 'window.__zrRestoreAuth ? window.__zrRestoreAuth() : 0',
+          );
+          restored = r is num ? r.toInt() : int.tryParse('$r') ?? 0;
+        } catch (_) {}
+        debugPrint(
+          '[zr-webreset] restore auth dev=${widget.device.id} '
+          'restored=$restored',
         );
-        return;
+        if (restored > 0) {
+          _showPairingDiagSnack('已回填登录态', jwtRemaining, pageAge);
+          if (mounted) await _manualReload('login-view-restored');
+          return;
+        }
       }
-      _loginHealAt = now;
-      _staleRestoreAt = now;
-      var restored = 0;
-      try {
-        final r = await _controller?.evaluateJavascript(
-          source: 'window.__zrRestoreAuth ? window.__zrRestoreAuth() : 0',
-        );
-        restored = r is num ? r.toInt() : int.tryParse('$r') ?? 0;
-      } catch (_) {}
-      debugPrint(
-        '[zr-webreset] restore auth dev=${widget.device.id} '
-        'restored=$restored',
-      );
-      if (restored > 0) {
-        _showPairingDiagSnack('已回填登录态', jwtRemaining, pageAge);
-        if (mounted) await _manualReload('login-view-restored');
-        return;
-      }
+      await _autoRelogin(jwtRemaining, pageAge);
+      return;
     }
-    _showPairingDiagSnack(
-      '登录视图·需重新登录',
-      jwtRemaining,
-      pageAge,
-      duration: const Duration(minutes: 30),
+    // jwt 临近过期（剩余 ≤10 分钟）：立即静默续期，避免稍后中断使用。
+    await _autoRelogin(jwtRemaining, pageAge);
+  }
+
+  /// 自动静默续期：登录视图上触发页面自身的 OAuth 流程（Z.ai 全球）。
+  /// chat.z.ai 会话 Cookie 存活时授权页自动放行、换发新 jwt，全程零
+  /// 交互；Cookie 过期才落到滑块/短信。10 分钟冷却由 _loginHealAt 把关。
+  Future<void> _autoRelogin(int jwtRemaining, int pageAge) async {
+    _loginHealAt = DateTime.now();
+    var clicked = 0;
+    try {
+      final r = await _controller?.evaluateJavascript(
+        source: WebSessionReset.autoReloginScript,
+      );
+      clicked = r is num ? r.toInt() : int.tryParse('$r') ?? 0;
+    } catch (_) {}
+    debugPrint(
+      '[zr-webreset] auto relogin dev=${widget.device.id} clicked=$clicked',
     );
+    if (!mounted) return;
+    if (clicked > 0) {
+      _showPairingDiagSnack(
+        '自动续期中',
+        jwtRemaining,
+        pageAge,
+        duration: const Duration(seconds: 15),
+      );
+    } else {
+      _showPairingDiagSnack(
+        '登录视图·需重新登录',
+        jwtRemaining,
+        pageAge,
+        duration: const Duration(minutes: 30),
+      );
+    }
   }
 
   /// 「手机连接已失效」自愈：sid 未变但设备会话被 relay 重置时，后台

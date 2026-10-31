@@ -125,6 +125,24 @@ abstract final class WebSessionReset {
 })();
 ''';
 
+  /// 自动静默续期脚本：在登录视图上点击「连接 Z.ai（全球）」按钮，
+  /// 触发页面自身的 OAuth 流程。chat.z.ai 的会话 Cookie 存活时，授权页
+  /// 自动放行并带码回跳，换发新 jwt——全程零交互；Cookie 过期时用户
+  /// 才会看到滑块/短信（z.ai 风控，不可避免）。返回是否找到并点击。
+  static const String autoReloginScript = '''
+(function () {
+  var btns = document.querySelectorAll('button');
+  for (var i = 0; i < btns.length; i++) {
+    var t = btns[i].innerText || '';
+    if (t.indexOf('Z.ai') !== -1 && t.indexOf('BigModel') === -1) {
+      btns[i].click();
+      return 1;
+    }
+  }
+  return 0;
+})();
+''';
+
   /// 核弹级清理（当前无自动调用方）：清站点存储、Cookie 与缓存。
   ///
   /// 应用内 WebView 只承载 relay 会话页；代价是登录态（jwt 存于
