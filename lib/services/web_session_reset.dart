@@ -5,18 +5,73 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 /// relay 会话页的自愈与站点数据工具。
 ///
-/// 「手机连接已失效」（relay 关闭原因 invalid-mobile-connection）有两类
-/// 成因：sid 已被桌面端轮换（加载了死链接），或页面里的登录 jwt 过期
-/// （ws 握手 WRONG_PARAM）。恢复阶梯见 session_view._onStalePairingDetected：
-/// 先用新鲜参数静默重载（sid 未变时无感恢复），持续失败才移除页面认证
-/// 凭据走重新登录。此处提供两者所需的脚本与工具方法。
+/// 「手机连接已失效」（relay 关闭原因 invalid-mobile-connection）与反复
+/// 重新验证的根因都在 relay 页面自身：登录 jwt 短 TTL（实测 ~15 分钟量
+/// 级）+ 页面存活时才静默续期 + 页面对暂时性失败会清除凭据/置位
+/// jwt-invalid-restart 标记，把下次启动直接路由进登录视图，且恢复重连
+/// 循环无法逃逸。恢复策略（见 session_view._onStalePairingDetected /
+/// _onStalePairingLogin）：静默重载优先，凭据镜像回填次之，最后才是
+/// 用户重新登录。此处提供注入脚本与工具方法。
 abstract final class WebSessionReset {
+  /// 认证镜像钩子脚本（每设备注入，deviceId 烘焙进脚本）。
+  ///
+  /// 在 document start 重写 Storage 的 setItem/removeItem/clear：6 个
+  /// 认证键的每次写入都镜像到 `zr:<deviceId>:mirror:<key>`（removeItem
+  /// 与 clear 不删镜像——页面清除凭据的过度反应要能被回填治愈）。同时
+  /// 安装 `window.__zrRestoreAuth()`：把镜像值回填到标准键，返回回填数。
+  static String authMirrorScript(String deviceId) {
+    final safeId = deviceId.replaceAll("'", '');
+    return '''
+(function () {
+  if (window.__zrAuthMirror) return;
+  window.__zrAuthMirror = true;
+  var NS = 'zr:$safeId:mirror:';
+  var AUTH = [
+    'zcodejwttoken',
+    'oauth:zai:access_token',
+    'oauth:bigmodel:access_token',
+    'oauth:active_provider',
+    'oauth:zai:user_info',
+    'zcode:auth:jwt-invalid-restart'
+  ];
+  var ls = window.localStorage;
+  var proto = Object.getPrototypeOf(ls) || Storage.prototype;
+  var _g = proto.getItem, _s = proto.setItem, _r = proto.removeItem,
+      _c = proto.clear;
+  function isAuth(k) { return AUTH.indexOf(k) !== -1; }
+  proto.setItem = function (k, v) {
+    if (isAuth(k)) { try { _s.call(ls, NS + k, v == null ? '' : v); } catch (e) {} }
+    return _s.call(this, k, v);
+  };
+  proto.removeItem = function (k) {
+    // 认证键的删除不删镜像：页面清除凭据的过度反应要能被回填治愈
+    return _r.call(this, k);
+  };
+  proto.clear = function () {
+    // 保留镜像
+    return _c.call(this);
+  };
+  window.__zrRestoreAuth = function () {
+    var n = 0;
+    try {
+      for (var i = 0; i < AUTH.length; i++) {
+        var v = _g.call(ls, NS + AUTH[i]);
+        if (v != null && v !== '') { _s.call(ls, AUTH[i], v); n++; }
+      }
+    } catch (e) {}
+    return n;
+  };
+})();
+''';
+  }
+
   /// 检测脚本：两类页面命中后携带诊断数据上报 Dart——
   /// 1. 错误页（「手机连接已失效」）：handler zrStalePairing；
   /// 2. 登录视图（「登录后继续使用 Web 远程控制」）：handler
-  ///    zrStalePairingLogin。jwt 过期时 bootstrap 直接路由到登录视图，
-  ///    不经过错误页，两处都要观测才能算出真实 TTL。
+  ///    zrStalePairingLogin。jwt 过期/缺失时 bootstrap 直接路由到登录
+  ///    视图，不经过错误页，两处都要观测。
   /// 诊断含 jwt 的 iat/exp（页面本地看到的）与页面存活秒数。
+  /// innerText 只取可见文本，避免 SPA 隐藏视图残留导致误判。
   static const String stalePairingDetectScript = '''
 (function () {
   var firedError = false, firedLogin = false;
@@ -67,27 +122,6 @@ abstract final class WebSessionReset {
   } else {
     arm();
   }
-})();
-''';
-
-  /// 自愈阶梯的末级：relay 页面的登录态（jwt，localStorage 键
-  /// zcodejwttoken）过期后，静默重载无法恢复，此时只移除页面自身的
-  /// 认证凭据并重载——页面因无 jwt 进入登录视图，用户重新登录一次即
-  /// 恢复。绝不清空整个站点存储或 Cookie：主题、tab 状态、
-  /// oauth:active_provider 等全部保留，避免更重的全量重新初始化。
-  static const String authResetScript = '''
-(function () {
-  var KEYS = [
-    'zcodejwttoken',
-    'oauth:zai:access_token',
-    'oauth:bigmodel:access_token',
-    'zcode:auth:jwt-invalid-restart'
-  ];
-  try {
-    for (var i = 0; i < KEYS.length; i++) {
-      window.localStorage.removeItem(KEYS[i]);
-    }
-  } catch (e) {}
 })();
 ''';
 

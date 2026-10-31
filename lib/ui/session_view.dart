@@ -76,6 +76,7 @@ class _SessionViewState extends ConsumerState<SessionView> {
   Timer? _resumeGrace;
   final List<DateTime> _stalePairingHeals = [];
   DateTime? _stalePairingClearedAt;
+  DateTime? _loginHealAt;
 
   final StateDiffer _stateDiffer = StateDiffer();
 
@@ -359,6 +360,10 @@ class _SessionViewState extends ConsumerState<SessionView> {
           source: WebSessionReset.stalePairingDetectScript,
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
+        UserScript(
+          source: WebSessionReset.authMirrorScript(widget.device.id),
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+        ),
       ]);
 
   Future<void> _syncWebTheme(bool dark) async {
@@ -411,11 +416,16 @@ class _SessionViewState extends ConsumerState<SessionView> {
     return (remaining, pageAge);
   }
 
-  void _showPairingDiagSnack(String source, int jwtRemaining, int pageAge) {
+  void _showPairingDiagSnack(
+    String source,
+    int jwtRemaining,
+    int pageAge, {
+    Duration duration = const Duration(seconds: 10),
+  }) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        duration: const Duration(seconds: 10),
+        duration: duration,
         content: Text(
           'zr-diag[$source] jwt剩余${jwtRemaining < 0 ? "?" : "$jwtRemaining分"}'
           ' 页面存活${pageAge < 0 ? "?" : "$pageAge分"}',
@@ -424,15 +434,56 @@ class _SessionViewState extends ConsumerState<SessionView> {
     );
   }
 
-  /// 登录视图诊断（jwt 过期时 bootstrap 直接路由到这里，不经过错误页）。
-  void _onStalePairingLogin(String? diagJson) {
+  /// 登录视图自愈：jwt 过期/缺失时 bootstrap 直接路由到这里。三种情况：
+  /// 1. jwt 仍有效（剩余 >10 分钟）：多半是 jwt-invalid-restart 标记把
+  ///    启动路由进了登录视图（标记在该次加载已被消费）——静默重载即恢复；
+  /// 2. jwt 缺失：页面清除凭据的过度反应——从镜像回填后重载恢复；
+  /// 3. jwt 真临近过期（剩余 ≤10 分钟）：无可避免，常驻 SnackBar 供
+  ///    截图取证，由用户重新登录。
+  Future<void> _onStalePairingLogin(String? diagJson) async {
     if (!mounted) return;
+    final now = DateTime.now();
     final (jwtRemaining, pageAge) = _parsePairingDiag(diagJson);
     debugPrint(
       '[zr-webreset] login view dev=${widget.device.id} '
       'jwtRemaining=$jwtRemaining pageAge=$pageAge',
     );
-    _showPairingDiagSnack('登录视图', jwtRemaining, pageAge);
+    if (WebSessionReset.isRelinkRequired(widget.device.id)) return;
+    if (_loginHealAt != null &&
+        now.difference(_loginHealAt!) < const Duration(minutes: 10)) {
+      return;
+    }
+    if (jwtRemaining > 10) {
+      _loginHealAt = now;
+      _showPairingDiagSnack('登录视图·jwt有效', jwtRemaining, pageAge);
+      await _manualReload('login-view-valid-jwt');
+      return;
+    }
+    if (jwtRemaining < 0) {
+      _loginHealAt = now;
+      var restored = 0;
+      try {
+        final r = await _controller?.evaluateJavascript(
+          source: 'window.__zrRestoreAuth ? window.__zrRestoreAuth() : 0',
+        );
+        restored = r is num ? r.toInt() : int.tryParse('$r') ?? 0;
+      } catch (_) {}
+      debugPrint(
+        '[zr-webreset] restore auth dev=${widget.device.id} '
+        'restored=$restored',
+      );
+      if (restored > 0) {
+        _showPairingDiagSnack('已回填登录态', jwtRemaining, pageAge);
+        if (mounted) await _manualReload('login-view-restored');
+        return;
+      }
+    }
+    _showPairingDiagSnack(
+      '登录视图·需重新登录',
+      jwtRemaining,
+      pageAge,
+      duration: const Duration(minutes: 30),
+    );
   }
 
   /// 「手机连接已失效」自愈：sid 未变但设备会话被 relay 重置时，后台
@@ -992,8 +1043,7 @@ class _SessionViewState extends ConsumerState<SessionView> {
                             );
                             return null;
                           },
-                        );
-                      },
+                        );                      },
                       onLoadStart: (_, _) {
                         if (mounted) {
                           setState(() {
