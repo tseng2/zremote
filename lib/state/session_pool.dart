@@ -78,15 +78,16 @@ class DeviceListNotifier extends Notifier<List<RemoteDevice>> {
       }
     }
     if (target == null) return;
-    // 标签若仍等于旧链接的主机名（用户未自定义命名），随新链接的主机名
-    // 更新，避免「更换连接配置」后设备名张冠李戴；自定义名保持不变。
-    final autoNamed =
-        target.label.isNotEmpty && target.label == target.params['name'];
+    // 标签继承：原条目未命名（label 空）或仍等于旧链接的主机名（用户未
+    // 自定义命名）时，采纳新链接的主机名，避免「更换连接配置」后设备名
+    // 张冠李戴；自定义名保持不变。
+    final autoDerived = target.label.isEmpty ||
+        target.label == target.params['name'];
     final updated = RemoteDevice(
       id: target.id,
       baseUrl: parsed.baseUrl,
       params: parsed.params,
-      label: autoNamed && parsed.label.isNotEmpty
+      label: autoDerived && parsed.label.isNotEmpty
           ? parsed.label
           : target.label,
       createdAt: target.createdAt,
