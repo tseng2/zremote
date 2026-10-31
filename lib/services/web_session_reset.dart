@@ -21,7 +21,7 @@ abstract final class WebSessionReset {
       // 是移除残留「手机连接记录」的关键一步。
       await _guard(() => WebStorageManager.instance().deleteAllData());
     }
-    await _guard(() => CookieManager.instance().clearCookies());
+    await _guard(() => CookieManager.instance().deleteAllCookies());
     await _guard(
       () => InAppWebViewController.clearAllCache(includeDiskFiles: true),
     );
