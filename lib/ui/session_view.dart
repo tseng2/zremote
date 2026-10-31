@@ -380,12 +380,13 @@ class _SessionViewState extends ConsumerState<SessionView> {
     await _controller?.loadUrl(urlRequest: _freshRequest());
   }
 
-  /// 「手机连接已失效」自愈：同一 sid 的设备会话被 relay 重置后，后台
+  /// 「手机连接已失效」自愈：sid 未变但设备会话被 relay 重置时，后台
   /// 活着的页面用旧参数重连会被拒（ws WRONG_PARAM），页面停在错误页且
   /// 自身重试无效。先用新鲜参数（新 t）静默重载——登录与站点存储原样
-  /// 保留，同一 sid 直接重新配对；10 分钟内两次仍失败视为 sid 已轮换，
-  /// 才升级为清站点数据走重新登录配对（sid 变更场景，见 WebSessionReset）。
-  void _onStalePairingDetected() {
+  /// 保留，同一 sid 直接重新配对；10 分钟内两次仍失败视为页面登录态
+  /// （jwt）已过期，移除页面认证凭据后重载，让页面进入登录视图重新
+  /// 登录一次（不清 Cookie 与其余站点数据，见 WebSessionReset）。
+  Future<void> _onStalePairingDetected() async {
     if (!mounted) return;
     final now = DateTime.now();
     if (_stalePairingClearedAt != null &&
@@ -402,13 +403,16 @@ class _SessionViewState extends ConsumerState<SessionView> {
     if (_stalePairingHeals.length >= 2) {
       _stalePairingHeals.clear();
       _stalePairingClearedAt = now;
-      WebSessionReset.clearSiteData().then((_) {
-        if (mounted) _manualReload('stale-pairing-clear');
-      });
+      try {
+        await _controller?.evaluateJavascript(
+          source: WebSessionReset.authResetScript,
+        );
+      } catch (_) {}
+      if (mounted) await _manualReload('stale-pairing-auth-reset');
       return;
     }
     _stalePairingHeals.add(now);
-    _manualReload('stale-pairing');
+    await _manualReload('stale-pairing');
   }
 
   Future<void> _onLoadError() async {

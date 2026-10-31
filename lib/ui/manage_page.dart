@@ -9,7 +9,6 @@ import '../services/app_settings.dart';
 import '../services/device_import.dart';
 import '../services/keepalive.dart';
 import '../services/link_builder.dart';
-import '../services/web_session_reset.dart';
 import '../state/app_lifecycle.dart';
 import '../state/session_pool.dart';
 import '../state/keepalive.dart';
@@ -267,7 +266,6 @@ class ManagePage extends ConsumerWidget {
         ),
       );
     }
-    await WebSessionReset.clearSiteData();
     await ref.read(deviceListProvider.notifier).add(device);
     ref.read(activeTabProvider.notifier).set(devices.length);
   }
@@ -488,9 +486,6 @@ Future<void> _applyReplaceLink(
     );
     return;
   }
-  // 更换连接配置即 sid 轮换：先清站点数据，替换后的重载才不会恢复
-  // 旧「手机连接记录」（详见 WebSessionReset 注释）。
-  await WebSessionReset.clearSiteData();
   await ref.read(deviceListProvider.notifier).replaceLink(target.id, parsed);
   if (!context.mounted) return;
   ScaffoldMessenger.of(
@@ -1969,9 +1964,6 @@ class _ScannerPageState extends ConsumerState<ScannerPage>
         Navigator.of(context).pop();
         return;
       }
-      // 更换连接配置即 sid 轮换：先清站点数据（didUpdateWidget 会随后
-      // 用新 sid 重载会话页，详见 WebSessionReset 注释）。
-      await WebSessionReset.clearSiteData();
       await ref
           .read(deviceListProvider.notifier)
           .replaceLink(replaceOf.id, device);
@@ -2002,9 +1994,6 @@ class _ScannerPageState extends ConsumerState<ScannerPage>
     }
 
     _navigating = true;
-    // 新 sid 首次导入：清掉 WebView 里上一台设备残留的站点数据，
-    // 避免 relay 页面恢复旧「手机连接记录」报「手机连接已失效」。
-    await WebSessionReset.clearSiteData();
     await ref.read(deviceListProvider.notifier).add(device);
     if (!mounted) return;
     Navigator.of(context).pop();

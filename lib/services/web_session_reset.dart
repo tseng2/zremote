@@ -3,45 +3,17 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
-/// relay 页面的 WebView 站点数据清理。
+/// relay 会话页的自愈与站点数据工具。
 ///
-/// relay 页面会把上一次配对的「手机连接记录」存进本地存储，并在打开
-/// 链接时优先恢复旧记录；桌面端 V2 认证重新注册后 sid 会轮换，旧记录
-/// 失效时页面报「手机连接已失效」，且不会回退到 URL 里的新 sid。因此
-/// 凡是 sid 发生变化的导入（扫码 / 粘贴）与更换连接配置，都必须先清
-/// 站点数据再加载新链接（等同于系统「清除应用数据」后的首次打开）。
+/// 「手机连接已失效」（relay 关闭原因 invalid-mobile-connection）有两类
+/// 成因：sid 已被桌面端轮换（加载了死链接），或页面里的登录 jwt 过期
+/// （ws 握手 WRONG_PARAM）。恢复阶梯见 session_view._onStalePairingDetected：
+/// 先用新鲜参数静默重载（sid 未变时无感恢复），持续失败才移除页面认证
+/// 凭据走重新登录。此处提供两者所需的脚本与工具方法。
 abstract final class WebSessionReset {
-  /// 清理 WebView 的站点存储（localStorage 等）、Cookie 与缓存。
-  ///
-  /// 应用内 WebView 只承载 relay 会话页，整体清理不影响其他功能；
-  /// 代价是各会话页在下次重载时需在页面里重新登录一次。
-  static Future<void> clearSiteData() async {
-    if (Platform.isAndroid) {
-      // Android 专有：清掉各 origin 的 localStorage / IndexedDB，
-      // 是移除残留「手机连接记录」的关键一步。
-      await _guard(() => WebStorageManager.instance().deleteAllData());
-    }
-    await _guard(() => CookieManager.instance().deleteAllCookies());
-    await _guard(
-      () => InAppWebViewController.clearAllCache(includeDiskFiles: true),
-    );
-    debugPrint('[zr-webreset] relay site data cleared');
-  }
-
-  static Future<void> _guard(Future<void> Function() step) async {
-    try {
-      await step();
-    } catch (e) {
-      debugPrint('[zr-webreset] step failed: $e');
-    }
-  }
-
-  /// 检测脚本：relay 设备会话被服务端重置（闲置回收 / 重启）后，后台
-  /// 活着的页面用旧参数重连会被 relay 拒绝（ws 返回 WRONG_PARAM），页面
-  /// 停在「手机连接已失效」错误页且自身重试无效。此处只负责识别该错误
-  /// 页并上报 Dart（window.flutter_inappwebview.callHandler），由 Dart
-  /// 端决定恢复动作：默认用新鲜参数静默重载（sid 未变时不重新登录、
-  /// 不重新配对，站点存储原样保留），连续失败才升级为清站点数据。
+  /// 检测脚本：页面停在「手机连接已失效」错误页时（页面自身的重试只会
+  /// 带着同样参数重复失败），上报 Dart（window.flutter_inappwebview
+  /// .callHandler），由 Dart 端决定恢复动作。
   static const String stalePairingDetectScript = '''
 (function () {
   var fired = false;
@@ -78,4 +50,48 @@ abstract final class WebSessionReset {
   }
 })();
 ''';
+
+  /// 自愈阶梯的末级：relay 页面的登录态（jwt，localStorage 键
+  /// zcodejwttoken）过期后，静默重载无法恢复，此时只移除页面自身的
+  /// 认证凭据并重载——页面因无 jwt 进入登录视图，用户重新登录一次即
+  /// 恢复。绝不清空整个站点存储或 Cookie：主题、tab 状态、
+  /// oauth:active_provider 等全部保留，避免更重的全量重新初始化。
+  static const String authResetScript = '''
+(function () {
+  var KEYS = [
+    'zcodejwttoken',
+    'oauth:zai:access_token',
+    'oauth:bigmodel:access_token',
+    'zcode:auth:jwt-invalid-restart'
+  ];
+  try {
+    for (var i = 0; i < KEYS.length; i++) {
+      window.localStorage.removeItem(KEYS[i]);
+    }
+  } catch (e) {}
+})();
+''';
+
+  /// 核弹级清理（当前无自动调用方）：清站点存储、Cookie 与缓存。
+  ///
+  /// 应用内 WebView 只承载 relay 会话页；代价是登录态（jwt 存于
+  /// localStorage）一并丢失，下次进入会话页需完整重新登录。
+  static Future<void> clearSiteData() async {
+    if (Platform.isAndroid) {
+      await _guard(() => WebStorageManager.instance().deleteAllData());
+    }
+    await _guard(() => CookieManager.instance().deleteAllCookies());
+    await _guard(
+      () => InAppWebViewController.clearAllCache(includeDiskFiles: true),
+    );
+    debugPrint('[zr-webreset] relay site data cleared');
+  }
+
+  static Future<void> _guard(Future<void> Function() step) async {
+    try {
+      await step();
+    } catch (e) {
+      debugPrint('[zr-webreset] step failed: $e');
+    }
+  }
 }
