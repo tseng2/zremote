@@ -36,15 +36,15 @@ abstract final class WebSessionReset {
     }
   }
 
-  /// 自愈脚本：relay 设备会话被重置（闲置回收 / 服务端重启）后，页面
-  /// 本地残留的旧「手机连接记录」会让恢复失败，停在「手机连接已失效」
-  /// 错误页；页面自身的「重新连接」只会带着同一份失效记录重复失败，
-  /// 也不会回退到用 URL 里的有效 sid 重新配对。注入后检测到该错误页
-  /// 即清空站点存储并带 zr_healed=1 重载一次：重载后走登录重新配对
-  /// （zr_healed 标记防止错误持续时无限自愈循环）。
-  static const String stalePairingHealScript = '''
+  /// 检测脚本：relay 设备会话被服务端重置（闲置回收 / 重启）后，后台
+  /// 活着的页面用旧参数重连会被 relay 拒绝（ws 返回 WRONG_PARAM），页面
+  /// 停在「手机连接已失效」错误页且自身重试无效。此处只负责识别该错误
+  /// 页并上报 Dart（window.flutter_inappwebview.callHandler），由 Dart
+  /// 端决定恢复动作：默认用新鲜参数静默重载（sid 未变时不重新登录、
+  /// 不重新配对，站点存储原样保留），连续失败才升级为清站点数据。
+  static const String stalePairingDetectScript = '''
 (function () {
-  if (/[?&]zr_healed=1/.test(location.search)) return;
+  var fired = false;
   var MARKERS = ['手机连接已失效', '当前页面的二维码参数无效'];
   function hit() {
     var text = document.body ? document.body.textContent : '';
@@ -54,20 +54,21 @@ abstract final class WebSessionReset {
     }
     return false;
   }
-  var healed = false;
-  function heal() {
-    if (healed) return;
-    healed = true;
-    try { window.localStorage.clear(); window.sessionStorage.clear(); } catch (e) {}
+  var mo = new MutationObserver(function () {
+    if (fired || !hit()) return;
+    fired = true;
     try {
-      var u = new URL(location.href);
-      u.searchParams.set('zr_healed', '1');
-      location.replace(u.toString());
-    } catch (e) { location.reload(); }
-  }
-  var mo = new MutationObserver(function () { if (hit()) heal(); });
+      window.flutter_inappwebview.callHandler('zrStalePairing');
+    } catch (e) {}
+  });
   function arm() {
-    if (hit()) { heal(); return; }
+    if (hit()) {
+      fired = true;
+      try {
+        window.flutter_inappwebview.callHandler('zrStalePairing');
+      } catch (e) {}
+      return;
+    }
     mo.observe(document.documentElement, { childList: true, subtree: true });
   }
   if (document.readyState === 'loading') {
