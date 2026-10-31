@@ -380,15 +380,65 @@ class _SessionViewState extends ConsumerState<SessionView> {
     await _controller?.loadUrl(urlRequest: _freshRequest());
   }
 
+  /// 解析检测脚本上报的诊断（jwt iat/exp + 页面存活秒数）。
+  /// 返回 (jwt剩余分钟, 页面存活分钟)；jwt 缺失/解析失败时剩余为 -1。
+  (int, int) _parsePairingDiag(String? diagJson) {
+    var remaining = -1, pageAge = -1;
+    try {
+      final d = jsonDecode(diagJson ?? '') as Map<String, dynamic>;
+      final pageAgeSec = (d['pageAgeSec'] as num?)?.toInt() ?? -1;
+      pageAge = pageAgeSec < 0 ? -1 : (pageAgeSec / 60).round();
+      final iat = (d['iat'] as num?)?.toInt() ?? 0;
+      final exp = (d['exp'] as num?)?.toInt() ?? 0;
+      if (iat > 0 && exp > iat) {
+        remaining = ((exp * 1000 - DateTime.now().millisecondsSinceEpoch) /
+              60000)
+            .round();
+      }
+    } catch (_) {}
+    return (remaining, pageAge);
+  }
+
+  void _showPairingDiagSnack(String source, int jwtRemaining, int pageAge) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 10),
+        content: Text(
+          'zr-diag[$source] jwt剩余${jwtRemaining < 0 ? "?" : "$jwtRemaining分"}'
+          ' 页面存活${pageAge < 0 ? "?" : "$pageAge分"}',
+        ),
+      ),
+    );
+  }
+
+  /// 登录视图诊断（jwt 过期时 bootstrap 直接路由到这里，不经过错误页）。
+  void _onStalePairingLogin(String? diagJson) {
+    if (!mounted) return;
+    final (jwtRemaining, pageAge) = _parsePairingDiag(diagJson);
+    debugPrint(
+      '[zr-webreset] login view dev=${widget.device.id} '
+      'jwtRemaining=$jwtRemaining pageAge=$pageAge',
+    );
+    _showPairingDiagSnack('登录视图', jwtRemaining, pageAge);
+  }
+
   /// 「手机连接已失效」自愈：sid 未变但设备会话被 relay 重置时，后台
   /// 活着的页面用旧参数重连会被拒（ws WRONG_PARAM），页面停在错误页且
   /// 自身重试无效。先用新鲜参数（新 t）静默重载——登录与站点存储原样
   /// 保留，同一 sid 直接重新配对；10 分钟内两次仍失败视为页面登录态
   /// （jwt）已过期，移除页面认证凭据后重载，让页面进入登录视图重新
   /// 登录一次（不清 Cookie 与其余站点数据，见 WebSessionReset）。
-  Future<void> _onStalePairingDetected() async {
+  Future<void> _onStalePairingDetected(String? diagJson) async {
     if (!mounted) return;
     final now = DateTime.now();
+    final (jwtRemaining, pageAge) = _parsePairingDiag(diagJson);
+    debugPrint(
+      '[zr-webreset] stale pairing dev=${widget.device.id} '
+      'jwtRemaining=$jwtRemaining pageAge=$pageAge '
+      'recent=${_stalePairingHeals.length}',
+    );
+    _showPairingDiagSnack('错误页', jwtRemaining, pageAge);
     if (_stalePairingClearedAt != null &&
         now.difference(_stalePairingClearedAt!) < const Duration(minutes: 5)) {
       return;
@@ -396,19 +446,21 @@ class _SessionViewState extends ConsumerState<SessionView> {
     _stalePairingHeals.removeWhere(
       (t) => now.difference(t) > const Duration(minutes: 10),
     );
-    debugPrint(
-      '[zr-webreset] stale pairing dev=${widget.device.id} '
-      'recent=${_stalePairingHeals.length}',
-    );
     if (_stalePairingHeals.length >= 2) {
       _stalePairingHeals.clear();
       _stalePairingClearedAt = now;
-      try {
-        await _controller?.evaluateJavascript(
-          source: WebSessionReset.authResetScript,
-        );
-      } catch (_) {}
-      if (mounted) await _manualReload('stale-pairing-auth-reset');
+      if (jwtRemaining < 0 || jwtRemaining <= 10) {
+        // jwt 已过期或缺失：移除凭据让页面进登录视图。
+        try {
+          await _controller?.evaluateJavascript(
+            source: WebSessionReset.authResetScript,
+          );
+        } catch (_) {}
+        if (mounted) await _manualReload('stale-pairing-auth-reset');
+      } else {
+        // jwt 仍有效：登录态不该动，重载后观察。
+        if (mounted) await _manualReload('stale-pairing');
+      }
       return;
     }
     _stalePairingHeals.add(now);
@@ -909,7 +961,18 @@ class _SessionViewState extends ConsumerState<SessionView> {
                         controller.addJavaScriptHandler(
                           handlerName: 'zrStalePairing',
                           callback: (args) {
-                            _onStalePairingDetected();
+                            _onStalePairingDetected(
+                              args.isNotEmpty ? args.first as String? : null,
+                            );
+                            return null;
+                          },
+                        );
+                        controller.addJavaScriptHandler(
+                          handlerName: 'zrStalePairingLogin',
+                          callback: (args) {
+                            _onStalePairingLogin(
+                              args.isNotEmpty ? args.first as String? : null,
+                            );
                             return null;
                           },
                         );

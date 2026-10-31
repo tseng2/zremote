@@ -11,36 +11,55 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 /// 先用新鲜参数静默重载（sid 未变时无感恢复），持续失败才移除页面认证
 /// 凭据走重新登录。此处提供两者所需的脚本与工具方法。
 abstract final class WebSessionReset {
-  /// 检测脚本：页面停在「手机连接已失效」错误页时（页面自身的重试只会
-  /// 带着同样参数重复失败），上报 Dart（window.flutter_inappwebview
-  /// .callHandler），由 Dart 端决定恢复动作。
+  /// 检测脚本：两类页面命中后携带诊断数据上报 Dart——
+  /// 1. 错误页（「手机连接已失效」）：handler zrStalePairing；
+  /// 2. 登录视图（「登录后继续使用 Web 远程控制」）：handler
+  ///    zrStalePairingLogin。jwt 过期时 bootstrap 直接路由到登录视图，
+  ///    不经过错误页，两处都要观测才能算出真实 TTL。
+  /// 诊断含 jwt 的 iat/exp（页面本地看到的）与页面存活秒数。
   static const String stalePairingDetectScript = '''
 (function () {
-  var fired = false;
-  var MARKERS = ['手机连接已失效', '当前页面的二维码参数无效'];
-  function hit() {
-    var text = document.body ? document.body.textContent : '';
-    if (!text) return false;
-    for (var i = 0; i < MARKERS.length; i++) {
-      if (text.indexOf(MARKERS[i]) !== -1) return true;
+  var firedError = false, firedLogin = false;
+  var ERR = ['手机连接已失效', '当前页面的二维码参数无效'];
+  var LOGIN = ['登录后继续使用 Web 远程控制'];
+  function has(list) {
+    var t = document.body ? document.body.textContent : '';
+    if (!t) return false;
+    for (var i = 0; i < list.length; i++) {
+      if (t.indexOf(list[i]) !== -1) return true;
     }
     return false;
   }
-  var mo = new MutationObserver(function () {
-    if (fired || !hit()) return;
-    fired = true;
+  function diag(kind) {
+    var d = { kind: kind, pageAgeSec: 0, iat: 0, exp: 0 };
     try {
-      window.flutter_inappwebview.callHandler('zrStalePairing');
+      d.pageAgeSec = Math.round((Date.now() - performance.timeOrigin) / 1000);
     } catch (e) {}
+    try {
+      var p = (window.localStorage.getItem('zcodejwttoken') || '').split('.');
+      if (p.length >= 2) {
+        var o = JSON.parse(atob(p[1].replace(/-/g, '+').replace(/_/g, '/')));
+        d.iat = o.iat || 0;
+        d.exp = o.exp || 0;
+      }
+    } catch (e) {}
+    return JSON.stringify(d);
+  }
+  function report(kind) {
+    try {
+      window.flutter_inappwebview.callHandler(
+        kind === 'error' ? 'zrStalePairing' : 'zrStalePairingLogin',
+        diag(kind)
+      );
+    } catch (e) {}
+  }
+  var mo = new MutationObserver(function () {
+    if (!firedError && has(ERR)) { firedError = true; report('error'); return; }
+    if (!firedLogin && !firedError && has(LOGIN)) { firedLogin = true; report('login'); }
   });
   function arm() {
-    if (hit()) {
-      fired = true;
-      try {
-        window.flutter_inappwebview.callHandler('zrStalePairing');
-      } catch (e) {}
-      return;
-    }
+    if (has(ERR)) { firedError = true; report('error'); return; }
+    if (has(LOGIN)) { firedLogin = true; report('login'); return; }
     mo.observe(document.documentElement, { childList: true, subtree: true });
   }
   if (document.readyState === 'loading') {
