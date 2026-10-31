@@ -23,7 +23,7 @@ abstract final class WebSessionReset {
   var ERR = ['手机连接已失效', '当前页面的二维码参数无效'];
   var LOGIN = ['登录后继续使用 Web 远程控制'];
   function has(list) {
-    var t = document.body ? document.body.textContent : '';
+    var t = document.body ? document.body.innerText : '';
     if (!t) return false;
     for (var i = 0; i < list.length; i++) {
       if (t.indexOf(list[i]) !== -1) return true;
@@ -105,6 +105,25 @@ abstract final class WebSessionReset {
     );
     debugPrint('[zr-webreset] relay site data cleared');
   }
+
+  /// 自愈放弃后标记「需重新连接」的设备。
+  ///
+  /// relay 页面的登录态（jwt）按 origin（zcode.z.ai）全局只有一份：
+  /// 若多台设备分属不同账号/平台，各设备页面会互相顶掉登录态。自愈
+  /// 放弃后必须停止对该页面的一切自动整页重载（手动 ⟳ 不受限，属
+  /// 用户显式操作），直到链接被更换/重新导入。
+  static final Set<String> _relinkRequired = {};
+
+  static bool isRelinkRequired(String deviceId) =>
+      _relinkRequired.contains(deviceId);
+
+  static void markRelinkRequired(String deviceId) {
+    _relinkRequired.add(deviceId);
+    debugPrint('[zr-webreset] relink required dev=$deviceId');
+  }
+
+  static void clearRelinkRequired(String deviceId) =>
+      _relinkRequired.remove(deviceId);
 
   static Future<void> _guard(Future<void> Function() step) async {
     try {

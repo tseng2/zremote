@@ -125,6 +125,10 @@ class _SessionViewState extends ConsumerState<SessionView> {
     if (oldDev.id == newDev.id &&
         (oldDev.baseUrl != newDev.baseUrl ||
             !mapEquals(oldDev.params, newDev.params))) {
+      // 链接已更换（重新扫码/更换连接配置）：解除自愈放弃标记。
+      WebSessionReset.clearRelinkRequired(widget.device.id);
+      _stalePairingHeals.clear();
+      _stalePairingClearedAt = null;
       _manualReload();
     }
   }
@@ -371,6 +375,14 @@ class _SessionViewState extends ConsumerState<SessionView> {
   }
 
   Future<void> _manualReload([String via = 'manual']) async {
+    if (via != 'manual' &&
+        WebSessionReset.isRelinkRequired(widget.device.id)) {
+      debugPrint(
+        '[zr-webreset] skip auto reload (relink required) '
+        'dev=${widget.device.id} via=$via',
+      );
+      return;
+    }
     debugPrint('[zr-resume] reload via=$via');
     setState(() {
       _loading = true;
@@ -439,6 +451,9 @@ class _SessionViewState extends ConsumerState<SessionView> {
       'recent=${_stalePairingHeals.length}',
     );
     _showPairingDiagSnack('错误页', jwtRemaining, pageAge);
+    if (WebSessionReset.isRelinkRequired(widget.device.id)) {
+      return; // 已放弃自愈的设备：不再自动重载/清凭据，等用户重新扫码
+    }
     if (_stalePairingClearedAt != null &&
         now.difference(_stalePairingClearedAt!) < const Duration(minutes: 5)) {
       return;
@@ -458,8 +473,10 @@ class _SessionViewState extends ConsumerState<SessionView> {
         } catch (_) {}
         if (mounted) await _manualReload('stale-pairing-auth-reset');
       } else {
-        // jwt 仍有效：登录态不该动，重载后观察。
-        if (mounted) await _manualReload('stale-pairing');
+        // jwt 仍有效：错误与登录态无关（多为持续报错设备），标记放弃
+        // 自愈——继续重载只会反复消费全局登录态、制造多余登录。
+        WebSessionReset.markRelinkRequired(widget.device.id);
+        _showPairingDiagSnack('放弃自愈', jwtRemaining, pageAge);
       }
       return;
     }
