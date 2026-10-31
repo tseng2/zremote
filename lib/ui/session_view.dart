@@ -77,6 +77,7 @@ class _SessionViewState extends ConsumerState<SessionView> {
   final List<DateTime> _stalePairingHeals = [];
   DateTime? _stalePairingClearedAt;
   DateTime? _loginHealAt;
+  DateTime? _staleRestoreAt;
 
   final StateDiffer _stateDiffer = StateDiffer();
 
@@ -134,8 +135,17 @@ class _SessionViewState extends ConsumerState<SessionView> {
     }
   }
 
-  void _report(SessionStatus status) =>
-      _statusNotifier?.report(widget.device.id, status);
+  void _report(SessionStatus status) {
+    if (status == SessionStatus.live) {
+      // 配对成功：复位全部自愈状态（放弃标记、冷却、计数）。
+      WebSessionReset.clearRelinkRequired(widget.device.id);
+      _stalePairingHeals.clear();
+      _stalePairingClearedAt = null;
+      _loginHealAt = null;
+      _staleRestoreAt = null;
+    }
+    _statusNotifier?.report(widget.device.id, status);
+  }
 
   void _onWsEvent(String body) {
     if (!mounted) return;
@@ -460,7 +470,19 @@ class _SessionViewState extends ConsumerState<SessionView> {
       return;
     }
     if (jwtRemaining < 0) {
+      final canRestore = _staleRestoreAt == null ||
+          now.difference(_staleRestoreAt!) > const Duration(minutes: 15);
+      if (!canRestore) {
+        _showPairingDiagSnack(
+          '登录视图·需重新登录',
+          jwtRemaining,
+          pageAge,
+          duration: const Duration(minutes: 30),
+        );
+        return;
+      }
       _loginHealAt = now;
+      _staleRestoreAt = now;
       var restored = 0;
       try {
         final r = await _controller?.evaluateJavascript(
@@ -515,19 +537,23 @@ class _SessionViewState extends ConsumerState<SessionView> {
     if (_stalePairingHeals.length >= 2) {
       _stalePairingHeals.clear();
       _stalePairingClearedAt = now;
-      if (jwtRemaining < 0 || jwtRemaining <= 10) {
-        // jwt 已过期或缺失：移除凭据让页面进登录视图。
+      final canRestore = jwtRemaining < 0 &&
+          (_staleRestoreAt == null ||
+           now.difference(_staleRestoreAt!) > const Duration(minutes: 15));
+      if (canRestore) {
+        // jwt 缺失（页面清除凭据的过度反应所致）：从镜像回填后重载。
+        _staleRestoreAt = now;
         try {
           await _controller?.evaluateJavascript(
-            source: WebSessionReset.authResetScript,
+            source: 'window.__zrRestoreAuth ? window.__zrRestoreAuth() : 0',
           );
         } catch (_) {}
-        if (mounted) await _manualReload('stale-pairing-auth-reset');
+        if (mounted) await _manualReload('stale-pairing-auth-restore');
       } else {
-        // jwt 仍有效：错误与登录态无关（多为持续报错设备），标记放弃
-        // 自愈——继续重载只会反复消费全局登录态、制造多余登录。
+        // 持续报错且镜像/重载都无法恢复（死 sid 或账号不匹配）：
+        // 标记放弃自愈，等用户重新扫码或手动 ⟳。
         WebSessionReset.markRelinkRequired(widget.device.id);
-        _showPairingDiagSnack('放弃自愈', jwtRemaining, pageAge);
+        _showPairingDiagSnack('放弃自愈·请重新扫码', jwtRemaining, pageAge);
       }
       return;
     }
