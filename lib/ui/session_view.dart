@@ -367,11 +367,11 @@ class _SessionViewState extends ConsumerState<SessionView> {
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
         UserScript(
-          source: WebSessionReset.stalePairingDetectScript,
+          source: WebSessionReset.deviceAuthIsolationScript(widget.device.id),
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
         UserScript(
-          source: WebSessionReset.authMirrorScript(widget.device.id),
+          source: WebSessionReset.stalePairingDetectScript,
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
       ]);

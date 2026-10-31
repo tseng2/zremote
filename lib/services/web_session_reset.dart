@@ -3,29 +3,41 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
-/// relay 会话页的自愈与站点数据工具。
+/// relay 会话页的自愈、设备级账号隔离与站点数据工具。
 ///
 /// 「手机连接已失效」（relay 关闭原因 invalid-mobile-connection）与反复
-/// 重新验证的根因都在 relay 页面自身：登录 jwt 短 TTL（实测 ~15 分钟量
-/// 级）+ 页面存活时才静默续期 + 页面对暂时性失败会清除凭据/置位
-/// jwt-invalid-restart 标记，把下次启动直接路由进登录视图，且恢复重连
-/// 循环无法逃逸。恢复策略（见 session_view._onStalePairingDetected /
-/// _onStalePairingLogin）：静默重载优先，凭据镜像回填次之，最后才是
-/// 用户重新登录。此处提供注入脚本与工具方法。
+/// 重新验证的根因都在 relay 页面自身：登录 jwt 短 TTL + 页面存活时才
+/// 静默续期 + 页面对暂时性失败会清除凭据/置位 jwt-invalid-restart 标记，
+/// 把下次启动直接路由进登录视图，且恢复重连循环无法逃逸。
+///
+/// 设备级账号隔离：登录态按 origin 全局只有一份，多台设备分属不同
+/// 账号时互相顶掉。`deviceAuthIsolationScript` 在 document start 把认证
+/// 键的读写重定向到每设备私有命名空间（`zr:<deviceId>:auth:*`），使每
+/// 台设备持有自己的登录态——多账号设备切换零登录，后台设备照常在线。
 abstract final class WebSessionReset {
-  /// 认证镜像钩子脚本（每设备注入，deviceId 烘焙进脚本）。
+  /// 设备级账号隔离脚本（每设备注入，deviceId 烘焙进脚本）。
   ///
-  /// 在 document start 重写 Storage 的 setItem/removeItem/clear：6 个
-  /// 认证键的每次写入都镜像到 `zr:<deviceId>:mirror:<key>`（removeItem
-  /// 与 clear 不删镜像——页面清除凭据的过度反应要能被回填治愈）。同时
-  /// 安装 `window.__zrRestoreAuth()`：把镜像值回填到标准键，返回回填数。
-  static String authMirrorScript(String deviceId) {
+  /// 在 document start：
+  /// 1. 迁移——首次运行把全局认证键**移动**（拷贝后清除）到设备私有槽
+  ///    `zr:<deviceId>:auth:*` 并置初始化标记（老用户升级兼容；此后
+  ///    全局键保持为空，各设备登录态完全独立）；
+  /// 2. 重定向——重写 Storage 的 getItem/setItem/removeItem/clear，认证
+  ///    键的读写全部路由到设备私有槽；
+  /// 3. 撤销缓冲——removeItem/clear 前把认证值存入 `zr:<deviceId>:mirror:`
+  ///    （页面清除凭据的过度反应可被 `__zrRestoreAuth()` 回填治愈），
+  ///    并安装 `window.__zrRestoreAuth()`。
+  ///
+  /// 每个 WebView 页面是独立 JS 上下文，原型重定向互不影响；认证键以
+  /// 外的读写原样透传。
+  static String deviceAuthIsolationScript(String deviceId) {
     final safeId = deviceId.replaceAll("'", '');
     return '''
 (function () {
-  if (window.__zrAuthMirror) return;
-  window.__zrAuthMirror = true;
-  var NS = 'zr:$safeId:mirror:';
+  if (window.__zrAuthIso) return;
+  window.__zrAuthIso = true;
+  var NS = 'zr:$safeId:auth:';
+  var MR = 'zr:$safeId:mirror:';
+  var INIT = 'zr:$safeId:init';
   var AUTH = [
     'zcodejwttoken',
     'oauth:zai:access_token',
@@ -39,24 +51,54 @@ abstract final class WebSessionReset {
   var _g = proto.getItem, _s = proto.setItem, _r = proto.removeItem,
       _c = proto.clear;
   function isAuth(k) { return AUTH.indexOf(k) !== -1; }
+  try {
+    if (_g.call(ls, INIT) !== '1') {
+      for (var i = 0; i < AUTH.length; i++) {
+        var v0 = _g.call(ls, AUTH[i]);
+        if (v0 != null) _s.call(ls, NS + AUTH[i], v0);
+      }
+      _s.call(ls, INIT, '1');
+    }
+  } catch (e) {}
+  proto.getItem = function (k) {
+    if (isAuth(k)) {
+      var v = _g.call(ls, NS + k);
+      if (v !== null) return v;
+    }
+    return _g.call(this, k);
+  };
   proto.setItem = function (k, v) {
-    if (isAuth(k)) { try { _s.call(ls, NS + k, v == null ? '' : v); } catch (e) {} }
+    if (isAuth(k)) {
+      try { _s.call(ls, NS + k, v == null ? '' : v); } catch (e) {}
+    }
     return _s.call(this, k, v);
   };
   proto.removeItem = function (k) {
-    // 认证键的删除不删镜像：页面清除凭据的过度反应要能被回填治愈
+    if (isAuth(k)) {
+      try {
+        var v = _g.call(ls, NS + k);
+        if (v != null && v !== '') _s.call(ls, MR + k, v);
+        _r.call(ls, NS + k);
+      } catch (e) {}
+    }
     return _r.call(this, k);
   };
   proto.clear = function () {
-    // 保留镜像
+    try {
+      for (var i = 0; i < AUTH.length; i++) {
+        var v = _g.call(ls, NS + AUTH[i]);
+        if (v != null && v !== '') _s.call(ls, MR + AUTH[i], v);
+        _r.call(ls, NS + AUTH[i]);
+      }
+    } catch (e) {}
     return _c.call(this);
   };
   window.__zrRestoreAuth = function () {
     var n = 0;
     try {
       for (var i = 0; i < AUTH.length; i++) {
-        var v = _g.call(ls, NS + AUTH[i]);
-        if (v != null && v !== '') { _s.call(ls, AUTH[i], v); n++; }
+        var v = _g.call(ls, MR + AUTH[i]);
+        if (v != null && v !== '') { _s.call(ls, NS + AUTH[i], v); n++; }
       }
     } catch (e) {}
     return n;
@@ -72,6 +114,8 @@ abstract final class WebSessionReset {
   ///    视图，不经过错误页，两处都要观测。
   /// 诊断含 jwt 的 iat/exp（页面本地看到的）与页面存活秒数。
   /// innerText 只取可见文本，避免 SPA 隐藏视图残留导致误判。
+  /// 注意：须在 deviceAuthIsolationScript 之后注入，诊断才能读到设备
+  /// 私有槽的认证键。
   static const String stalePairingDetectScript = '''
 (function () {
   var firedError = false, firedLogin = false;
@@ -146,7 +190,8 @@ abstract final class WebSessionReset {
   /// 核弹级清理（当前无自动调用方）：清站点存储、Cookie 与缓存。
   ///
   /// 应用内 WebView 只承载 relay 会话页；代价是登录态（jwt 存于
-  /// localStorage）一并丢失，下次进入会话页需完整重新登录。
+  /// localStorage，隔离后在各设备私有槽）一并丢失，下次进入会话页需
+  /// 完整重新登录。
   static Future<void> clearSiteData() async {
     if (Platform.isAndroid) {
       await _guard(() => WebStorageManager.instance().deleteAllData());
@@ -160,10 +205,9 @@ abstract final class WebSessionReset {
 
   /// 自愈放弃后标记「需重新连接」的设备。
   ///
-  /// relay 页面的登录态（jwt）按 origin（zcode.z.ai）全局只有一份：
-  /// 若多台设备分属不同账号/平台，各设备页面会互相顶掉登录态。自愈
-  /// 放弃后必须停止对该页面的一切自动整页重载（手动 ⟳ 不受限，属
-  /// 用户显式操作），直到链接被更换/重新导入。
+  /// 设备级账号隔离下登录态已按设备分槽，但持续报错的设备（死 sid /
+  /// 账号不匹配）仍不应被自动整页重载反复打扰（手动 ⟳ 不受限，属用户
+  /// 显式操作），直到链接被更换/重新导入。
   static final Set<String> _relinkRequired = {};
 
   static bool isRelinkRequired(String deviceId) =>
