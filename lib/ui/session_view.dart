@@ -352,7 +352,7 @@ class _SessionViewState extends ConsumerState<SessionView> {
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
         UserScript(
-          source: WebSessionReset.stalePairingHealScript,
+          source: WebSessionReset.stalePairingDetectScript,
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
       ]);
